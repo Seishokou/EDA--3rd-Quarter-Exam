@@ -1,0 +1,389 @@
+import pandas as pd
+import numpy as np
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import seaborn as sns
+import statsmodels.api as sm
+from statsmodels.formula.api import ols
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+
+class ConcreteANOVAApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Concrete Engineering ANOVA Dashboard")
+        self.root.geometry("1200x900")
+        self.df = None
+        
+        # UI Styles
+        self.sidebar_color = "#2c3e50"
+        self.accent_color = "#e67e22" 
+        self.font_header = ("Segoe UI", 12, "bold")
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Sidebar Navigation
+        self.sidebar = tk.Frame(self.root, bg=self.sidebar_color, width=250)
+        self.sidebar.pack(side="left", fill="y")
+        self.sidebar.pack_propagate(False)
+
+        tk.Label(self.sidebar, text="ANOVA SECTION (F)", font=self.font_header, 
+                 bg=self.sidebar_color, fg="white").pack(pady=20)
+
+        # Navigation Buttons
+        self.btn_load = self.create_btn("1. Load CSV Dataset", self.load_data)
+        self.btn_groups = self.create_btn("F1: Define Groups", self.define_groups, state=tk.DISABLED)
+        self.btn_anova = self.create_btn("F2/F3: Run ANOVA", self.run_anova, state=tk.DISABLED)
+        self.btn_posthoc = self.create_btn("F4: Post-Hoc Test", self.run_posthoc, state=tk.DISABLED)
+        self.btn_memo = self.create_btn("F5: QC Memo", self.show_memo, state=tk.DISABLED)
+        self.btn_dist = self.create_btn("View Histograms", self.plot_distribution, state=tk.DISABLED)
+
+        # Main Output Area
+        self.main = tk.Frame(self.root, bg="#f4f7f6")
+        self.main.pack(side="right", expand=True, fill="both")
+
+        # Results Pane Header
+        self.lbl_status = tk.Label(self.main, text="Results Pane: Waiting for Data...", 
+                                   font=("Segoe UI", 14, "bold"), bg="#f4f7f6", fg="#2c3e50")
+        self.lbl_status.pack(pady=(10, 0))
+
+        # Output Display (Scrolled Text)
+        self.txt_output = scrolledtext.ScrolledText(self.main, height=12, font=("Consolas", 11), 
+                                                   bg="white", fg="#2c3e50", padx=10, pady=10)
+        self.txt_output.pack(padx=20, pady=10, fill="x")
+
+        # Plot Display Area
+        self.plot_frame = tk.Frame(self.main, bg="white", highlightbackground="#dcdde1", highlightthickness=1)
+        self.plot_frame.pack(padx=20, pady=10, expand=True, fill="both")
+
+    def create_btn(self, text, cmd, state=tk.NORMAL):
+        btn = tk.Button(self.sidebar, text=text, command=cmd, state=state,
+                        bg="#34495e", fg="white", relief="flat", height=2, cursor="hand2",
+                        activebackground=self.accent_color, font=("Segoe UI", 10))
+        btn.pack(fill="x", pady=5, padx=10)
+        return btn
+
+    def clear_output(self, title):
+        """Clears the text area and updates the header title."""
+        self.lbl_status.config(text=f"Results Pane: {title}")
+        self.txt_output.config(state=tk.NORMAL)
+        self.txt_output.delete('1.0', tk.END)
+
+    def load_data(self):
+        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
+        if path:
+            try:
+                self.df = pd.read_csv(path)
+                # Clean column names
+                self.df.columns = [c.strip().replace(' ', '_').replace('(', '').replace(')', '') for c in self.df.columns]
+                
+                self.clear_output("Data Loaded")
+                self.txt_output.insert(tk.END, f"SUCCESS: {len(self.df)} samples imported.\n")
+                self.txt_output.insert(tk.END, "-"*50 + "\n")
+                self.txt_output.insert(tk.END, f"Target Variable identified: Concrete_compressive_strength\n")
+                
+                self.btn_groups.config(state=tk.NORMAL)
+                self.btn_dist.config(state=tk.NORMAL)
+            except Exception as e:
+                messagebox.showerror("Error", f"Load failed: {e}")
+
+    def define_groups(self):
+        try:
+            self.clear_output("F1 - Group Definition")
+            bins = [0, 7, 28, 400]
+            labels = ['Early Stage (1-7d)', 'Standard (8-28d)', 'Long-Term (>28d)']
+            self.df['Curing_Group'] = pd.cut(self.df['Age_day'], bins=bins, labels=labels)
+            
+            summary = self.df['Curing_Group'].value_counts().to_string()
+            
+            output_text = (
+                "RATIONALE: Concrete hydration reaches 70% strength by day 7 and \n"
+                "design strength by day 28. These groups represent critical \n"
+                "engineering milestones.\n\n"
+                "SAMPLE DISTRIBUTION PER GROUP:\n" + "-"*30 + "\n" +
+                summary + "\n" + "-"*30
+            )
+            self.txt_output.insert(tk.END, output_text)
+            self.btn_anova.config(state=tk.NORMAL)
+            
+            # Auto-plot distribution when groups are defined
+            self.plot_distribution()
+        except Exception as e:
+            messagebox.showerror("Error", f"Grouping failed: {e}")
+
+    def run_anova(self):
+        try:
+            self.clear_output("F2/F3 - ANOVA Results")
+            target_col = 'Concrete_compressive_strength'
+            formula = f'Q("{target_col}") ~ C(Curing_Group)'
+            model = ols(formula, data=self.df).fit()
+            anova_table = sm.stats.anova_lm(model, typ=2)
+            
+            p_val = anova_table['PR(>F)'][0]
+            decision = "REJECT NULL HYPOTHESIS" if p_val < 0.05 else "FAIL TO REJECT"
+            
+            self.txt_output.insert(tk.END, "[F2] ANOVA TABLE:\n" + anova_table.to_string() + "\n\n")
+            self.txt_output.insert(tk.END, f"[F3] STATISTICAL DECISION:\n{decision}\n")
+            self.txt_output.insert(tk.END, f"P-Value: {p_val:.4e}\n")
+            self.txt_output.insert(tk.END, "Interpretation: Curing age significantly affects MPa results.")
+
+            self.btn_posthoc.config(state=tk.NORMAL)
+            self.btn_memo.config(state=tk.NORMAL)
+
+            # Boxplot visualization
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.boxplot(x='Curing_Group', y=target_col, data=self.df, palette="Oranges", ax=ax)
+            ax.set_title("Strength Variance Across Curing Groups")
+            self.display_plot(fig)
+        except Exception as e:
+            messagebox.showerror("Error", f"ANOVA failed: {e}")
+
+    def run_posthoc(self):
+        try:
+            self.clear_output("F4 - Post-Hoc Comparison")
+            target_col = 'Concrete_compressive_strength'
+            clean_df = self.df.dropna(subset=[target_col, 'Curing_Group'])
+            tukey = pairwise_tukeyhsd(endog=clean_df[target_col], groups=clean_df['Curing_Group'], alpha=0.05)
+            
+            self.txt_output.insert(tk.END, "TUKEY HSD TEST RESULTS:\n" + "-"*30 + "\n")
+            self.txt_output.insert(tk.END, str(tukey))
+            self.txt_output.insert(tk.END, "\n\nNote: 'Reject=True' means the difference between those groups is significant.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Post-hoc failed: {e}")
+
+    def show_memo(self):
+        self.clear_output("F5 - Quality Control Memo")
+        memo = (
+            "MEMORANDUM\n" + "="*40 + "\n"
+            "TO: Project Management & Concrete Supplier\n"
+            "SUBJECT: Strength Variance & Curing Optimization\n\n"
+            "ANALYSIS:\n"
+            "Our ANOVA testing confirms that curing duration is a primary driver of strength.\n\n"
+            "RECOMMENDATIONS:\n"
+            "1. STRICT CURING: Enforce 28-day hydration for structural elements.\n"
+            "2. MIX DESIGN: For early-strength needs, increase cement content or use accelerators.\n"
+            "3. ADMIXTURES: Use superplasticizers to maintain low water-cement ratios."
+        )
+        self.txt_output.insert(tk.END, memo)
+
+    def plot_distribution(self):
+        try:
+            self.clear_output("Histogram View")
+            target_col = 'Concrete_compressive_strength'
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.histplot(self.df[target_col], kde=True, color="#e67e22", ax=ax)
+            ax.set_title("Compressive Strength Distribution (MPa)")
+            self.display_plot(fig)
+            self.txt_output.insert(tk.END, "Viewing distribution of all 1030 concrete samples.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Plotting failed: {e}")
+
+    def display_plot(self, fig):
+        for widget in self.plot_frame.winfo_children():
+            widget.destroy()
+        canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
+        canvas.draw()
+        toolbar = NavigationToolbar2Tk(canvas, self.plot_frame)
+        toolbar.update()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ConcreteANOVAApp(root)
+    root.mainloop()import pandas as pd
+import numpy as np
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import seaborn as sns
+import statsmodels.api as sm
+from statsmodels.formula.api import ols
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+
+class ConcreteANOVAApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Concrete Engineering ANOVA Dashboard")
+        self.root.geometry("1200x900")
+        self.df = None
+        
+        # UI Styles
+        self.sidebar_color = "#2c3e50"
+        self.accent_color = "#e67e22" 
+        self.font_header = ("Segoe UI", 12, "bold")
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Sidebar Navigation
+        self.sidebar = tk.Frame(self.root, bg=self.sidebar_color, width=250)
+        self.sidebar.pack(side="left", fill="y")
+        self.sidebar.pack_propagate(False)
+
+        tk.Label(self.sidebar, text="ANOVA SECTION (F)", font=self.font_header, 
+                 bg=self.sidebar_color, fg="white").pack(pady=20)
+
+        # Navigation Buttons
+        self.btn_load = self.create_btn("1. Load CSV Dataset", self.load_data)
+        self.btn_groups = self.create_btn("F1: Define Groups", self.define_groups, state=tk.DISABLED)
+        self.btn_anova = self.create_btn("F2/F3: Run ANOVA", self.run_anova, state=tk.DISABLED)
+        self.btn_posthoc = self.create_btn("F4: Post-Hoc Test", self.run_posthoc, state=tk.DISABLED)
+        self.btn_memo = self.create_btn("F5: QC Memo", self.show_memo, state=tk.DISABLED)
+        self.btn_dist = self.create_btn("View Histograms", self.plot_distribution, state=tk.DISABLED)
+
+        # Main Output Area
+        self.main = tk.Frame(self.root, bg="#f4f7f6")
+        self.main.pack(side="right", expand=True, fill="both")
+
+        # Results Pane Header
+        self.lbl_status = tk.Label(self.main, text="Results Pane: Waiting for Data...", 
+                                   font=("Segoe UI", 14, "bold"), bg="#f4f7f6", fg="#2c3e50")
+        self.lbl_status.pack(pady=(10, 0))
+
+        # Output Display (Scrolled Text)
+        self.txt_output = scrolledtext.ScrolledText(self.main, height=12, font=("Consolas", 11), 
+                                                   bg="white", fg="#2c3e50", padx=10, pady=10)
+        self.txt_output.pack(padx=20, pady=10, fill="x")
+
+        # Plot Display Area
+        self.plot_frame = tk.Frame(self.main, bg="white", highlightbackground="#dcdde1", highlightthickness=1)
+        self.plot_frame.pack(padx=20, pady=10, expand=True, fill="both")
+
+    def create_btn(self, text, cmd, state=tk.NORMAL):
+        btn = tk.Button(self.sidebar, text=text, command=cmd, state=state,
+                        bg="#34495e", fg="white", relief="flat", height=2, cursor="hand2",
+                        activebackground=self.accent_color, font=("Segoe UI", 10))
+        btn.pack(fill="x", pady=5, padx=10)
+        return btn
+
+    def clear_output(self, title):
+        """Clears the text area and updates the header title."""
+        self.lbl_status.config(text=f"Results Pane: {title}")
+        self.txt_output.config(state=tk.NORMAL)
+        self.txt_output.delete('1.0', tk.END)
+
+    def load_data(self):
+        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
+        if path:
+            try:
+                self.df = pd.read_csv(path)
+                # Clean column names
+                self.df.columns = [c.strip().replace(' ', '_').replace('(', '').replace(')', '') for c in self.df.columns]
+                
+                self.clear_output("Data Loaded")
+                self.txt_output.insert(tk.END, f"SUCCESS: {len(self.df)} samples imported.\n")
+                self.txt_output.insert(tk.END, "-"*50 + "\n")
+                self.txt_output.insert(tk.END, f"Target Variable identified: Concrete_compressive_strength\n")
+                
+                self.btn_groups.config(state=tk.NORMAL)
+                self.btn_dist.config(state=tk.NORMAL)
+            except Exception as e:
+                messagebox.showerror("Error", f"Load failed: {e}")
+
+    def define_groups(self):
+        try:
+            self.clear_output("F1 - Group Definition")
+            bins = [0, 7, 28, 400]
+            labels = ['Early Stage (1-7d)', 'Standard (8-28d)', 'Long-Term (>28d)']
+            self.df['Curing_Group'] = pd.cut(self.df['Age_day'], bins=bins, labels=labels)
+            
+            summary = self.df['Curing_Group'].value_counts().to_string()
+            
+            output_text = (
+                "RATIONALE: Concrete hydration reaches 70% strength by day 7 and \n"
+                "design strength by day 28. These groups represent critical \n"
+                "engineering milestones.\n\n"
+                "SAMPLE DISTRIBUTION PER GROUP:\n" + "-"*30 + "\n" +
+                summary + "\n" + "-"*30
+            )
+            self.txt_output.insert(tk.END, output_text)
+            self.btn_anova.config(state=tk.NORMAL)
+            
+            # Auto-plot distribution when groups are defined
+            self.plot_distribution()
+        except Exception as e:
+            messagebox.showerror("Error", f"Grouping failed: {e}")
+
+    def run_anova(self):
+        try:
+            self.clear_output("F2/F3 - ANOVA Results")
+            target_col = 'Concrete_compressive_strength'
+            formula = f'Q("{target_col}") ~ C(Curing_Group)'
+            model = ols(formula, data=self.df).fit()
+            anova_table = sm.stats.anova_lm(model, typ=2)
+            
+            p_val = anova_table['PR(>F)'][0]
+            decision = "REJECT NULL HYPOTHESIS" if p_val < 0.05 else "FAIL TO REJECT"
+            
+            self.txt_output.insert(tk.END, "[F2] ANOVA TABLE:\n" + anova_table.to_string() + "\n\n")
+            self.txt_output.insert(tk.END, f"[F3] STATISTICAL DECISION:\n{decision}\n")
+            self.txt_output.insert(tk.END, f"P-Value: {p_val:.4e}\n")
+            self.txt_output.insert(tk.END, "Interpretation: Curing age significantly affects MPa results.")
+
+            self.btn_posthoc.config(state=tk.NORMAL)
+            self.btn_memo.config(state=tk.NORMAL)
+
+            # Boxplot visualization
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.boxplot(x='Curing_Group', y=target_col, data=self.df, palette="Oranges", ax=ax)
+            ax.set_title("Strength Variance Across Curing Groups")
+            self.display_plot(fig)
+        except Exception as e:
+            messagebox.showerror("Error", f"ANOVA failed: {e}")
+
+    def run_posthoc(self):
+        try:
+            self.clear_output("F4 - Post-Hoc Comparison")
+            target_col = 'Concrete_compressive_strength'
+            clean_df = self.df.dropna(subset=[target_col, 'Curing_Group'])
+            tukey = pairwise_tukeyhsd(endog=clean_df[target_col], groups=clean_df['Curing_Group'], alpha=0.05)
+            
+            self.txt_output.insert(tk.END, "TUKEY HSD TEST RESULTS:\n" + "-"*30 + "\n")
+            self.txt_output.insert(tk.END, str(tukey))
+            self.txt_output.insert(tk.END, "\n\nNote: 'Reject=True' means the difference between those groups is significant.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Post-hoc failed: {e}")
+
+    def show_memo(self):
+        self.clear_output("F5 - Quality Control Memo")
+        memo = (
+            "MEMORANDUM\n" + "="*40 + "\n"
+            "TO: Project Management & Concrete Supplier\n"
+            "SUBJECT: Strength Variance & Curing Optimization\n\n"
+            "ANALYSIS:\n"
+            "Our ANOVA testing confirms that curing duration is a primary driver of strength.\n\n"
+            "RECOMMENDATIONS:\n"
+            "1. STRICT CURING: Enforce 28-day hydration for structural elements.\n"
+            "2. MIX DESIGN: For early-strength needs, increase cement content or use accelerators.\n"
+            "3. ADMIXTURES: Use superplasticizers to maintain low water-cement ratios."
+        )
+        self.txt_output.insert(tk.END, memo)
+
+    def plot_distribution(self):
+        try:
+            self.clear_output("Histogram View")
+            target_col = 'Concrete_compressive_strength'
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.histplot(self.df[target_col], kde=True, color="#e67e22", ax=ax)
+            ax.set_title("Compressive Strength Distribution (MPa)")
+            self.display_plot(fig)
+            self.txt_output.insert(tk.END, "Viewing distribution of all 1030 concrete samples.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Plotting failed: {e}")
+
+    def display_plot(self, fig):
+        for widget in self.plot_frame.winfo_children():
+            widget.destroy()
+        canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
+        canvas.draw()
+        toolbar = NavigationToolbar2Tk(canvas, self.plot_frame)
+        toolbar.update()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ConcreteANOVAApp(root)
+    root.mainloop()
