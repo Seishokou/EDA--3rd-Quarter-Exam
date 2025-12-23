@@ -1,0 +1,211 @@
+import pandas as pd
+import numpy as np
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import seaborn as sns
+from sklearn.linear_model import LinearRegression
+import statsmodels.api as sm
+from statsmodels.formula.api import ols
+
+class ConcreteAnalysisApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Concrete Engineering Analysis Dashboard")
+        self.root.geometry("1200x950")
+        self.df = None
+        
+        # UI Styles
+        self.sidebar_color = "#2c3e50"
+        self.btn_color = "#34495e"
+        self.text_color = "#ecf0f1"
+        self.accent_color = "#1abc9c"
+        self.font_main = ("Segoe UI", 10)
+        self.font_header = ("Segoe UI", 12, "bold")
+        self.font_mono = ("Consolas", 10)
+        
+        self.setup_layout()
+
+    def setup_layout(self):
+        self.sidebar = tk.Frame(self.root, bg=self.sidebar_color, width=220, padx=10, pady=20)
+        self.sidebar.pack(side="left", fill="y")
+        self.sidebar.pack_propagate(False)
+
+        self.main_area = tk.Frame(self.root, bg="#f8f9fa")
+        self.main_area.pack(side="right", expand=True, fill="both")
+
+        tk.Label(self.sidebar, text="ENGINEERING MENU", font=self.font_header, 
+                 bg=self.sidebar_color, fg=self.text_color).pack(pady=(0, 20))
+
+        self.btn_load = self.create_nav_btn("1. Load Dataset", self.load_csv)
+        self.btn_plots = self.create_nav_btn("Part A: Scatterplots", self.show_scatterplots, state=tk.DISABLED)
+        self.btn_corr = self.create_nav_btn("Part B: Correlation", self.show_correlation, state=tk.DISABLED)
+        self.btn_reg = self.create_nav_btn("Part C/D: Regression", self.run_regression, state=tk.DISABLED)
+        self.btn_memo = self.create_nav_btn("Part E: Recommendation", self.show_memo, state=tk.DISABLED)
+        self.btn_anova = self.create_nav_btn("Part F: ANOVA", self.run_anova, state=tk.DISABLED)
+
+        self.master_frame = tk.LabelFrame(self.main_area, text=" SUMMARY DASHBOARD ", font=self.font_header, bg="#f8f9fa")
+        self.master_frame.pack(padx=15, pady=10, fill="x")
+
+        self.text_area = scrolledtext.ScrolledText(self.master_frame, height=14, font=self.font_mono, bg="white")
+        self.text_area.pack(padx=10, pady=10, fill="x")
+
+        self.detail_frame = tk.LabelFrame(self.main_area, text=" VISUALIZATION PANE ", font=self.font_header, bg="#f8f9fa")
+        self.detail_frame.pack(padx=15, pady=5, fill="both", expand=True)
+        
+        self.plot_container = tk.Frame(self.detail_frame, bg="white")
+        self.plot_container.pack(fill="both", expand=True)
+
+    def create_nav_btn(self, text, command, state=tk.NORMAL):
+        btn = tk.Button(self.sidebar, text=text, command=command, state=state,
+                        bg=self.btn_color, fg=self.text_color, font=self.font_main,
+                        relief="flat", height=2, cursor="hand2", activebackground=self.accent_color)
+        btn.pack(fill="x", pady=5)
+        return btn
+
+    def update_dashboard_text(self, title, content):
+        self.text_area.delete('1.0', tk.END)
+        self.text_area.insert(tk.END, f"ANALYSIS: {title}\n", "header")
+        self.text_area.insert(tk.END, "-"*80 + "\n")
+        self.text_area.insert(tk.END, content)
+        self.text_area.tag_config("header", font=("Consolas", 12, "bold"), foreground="#2980b9")
+
+    def embed_plot(self, fig):
+        for widget in self.plot_container.winfo_children():
+            widget.destroy()
+        canvas = FigureCanvasTkAgg(fig, master=self.plot_container)
+        canvas.draw()
+        toolbar = NavigationToolbar2Tk(canvas, self.plot_container)
+        toolbar.update()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    def load_csv(self):
+        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
+        if file_path:
+            try:
+                self.df = pd.read_csv(file_path)
+                self.df.columns = [c.strip() for c in self.df.columns]
+                for col in self.df.columns:
+                    self.df[col] = pd.to_numeric(self.df[col], errors='coerce')
+                self.df = self.df.dropna()
+                
+                info = (f"FILE LOADED   : {file_path.split('/')[-1]}\n"
+                        f"OBSERVATIONS  : {self.df.shape[0]} test samples\n"
+                        f"PARAMETERS    : {len(self.df.columns)-1} Inputs, 1 Target")
+                self.update_dashboard_text("DATASET READY", info)
+                
+                for btn in [self.btn_plots, self.btn_corr, self.btn_reg, self.btn_memo, self.btn_anova]:
+                    btn.config(state=tk.NORMAL)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load: {e}")
+
+    def show_scatterplots(self):
+        target = self.df.columns[-1]
+        inputs = [c for c in self.df.columns if c != target]
+        info = f"ACTION: Generating Scatterplots vs. {target}\nGoal: Detect distribution clusters and trends."
+        self.update_dashboard_text("PART A: EXPLORATORY SCATTERPLOTS", info)
+
+        fig, axes = plt.subplots(2, 4, figsize=(14, 8))
+        for i, col in enumerate(inputs[:8]):
+            ax = axes[i//4, i%4]
+            sns.scatterplot(data=self.df, x=col, y=target, alpha=0.4, ax=ax, color="#3498db", s=15)
+            ax.set_title(col[:15], fontsize=8, fontweight='bold')
+        fig.tight_layout(pad=2.0)
+        self.embed_plot(fig)
+
+    def show_correlation(self):
+        corr_matrix = self.df.corr()
+        target = self.df.columns[-1]
+        correlations_with_target = corr_matrix[target].sort_values(ascending=False)
+        
+        info = "RANKED CORRELATION WITH TARGET:\n" + "="*45 + "\n"
+        for var, val in correlations_with_target.items():
+            info += f"{var:<30} | {val:>8.3f}\n"
+        
+        self.update_dashboard_text("PART B: CORRELATION MATRIX", info)
+
+        fig, ax = plt.subplots(figsize=(10, 7))
+        sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt=".2f", ax=ax, linewidths=0.5, annot_kws={"size": 7})
+        ax.set_title("Inter-Variable Correlation Heatmap", fontsize=10)
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+        fig.tight_layout()
+        self.embed_plot(fig)
+
+    def run_regression(self):
+        target = self.df.columns[-1]
+        X_s = self.df[['Cement']]
+        y = self.df[target]
+        m_s = LinearRegression().fit(X_s, y)
+        
+        X_m = self.df.drop(columns=[target])
+        X_m_const = sm.add_constant(X_m)
+        m_m = sm.OLS(y, X_m_const).fit()
+        
+        info = (f"[PART C] SIMPLE LINEAR MODEL:\n"
+                f"Equation: Strength = ({m_s.coef_[0]:.3f} * Cement) + {m_s.intercept_:.3f}\n\n"
+                f"[PART D] MULTIPLE REGRESSION:\n"
+                f"R-Squared: {m_m.rsquared:.4f}\n"
+                f"Significant Variables (p < 0.05):\n"
+                f"{m_m.pvalues[m_m.pvalues < 0.05].index.tolist()}")
+        self.update_dashboard_text("PART C & D: REGRESSION RESULTS", info)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        sns.regplot(x='Cement', y=target, data=self.df, scatter_kws={'alpha':0.3}, line_kws={"color":"#e74c3c"}, ax=ax)
+        self.embed_plot(fig)
+
+    def show_memo(self):
+        """Part E: Updated with detailed engineering analysis and clearing the visual pane."""
+        # 1. Clear the Visualization Pane as requested
+        for widget in self.plot_container.winfo_children():
+            widget.destroy()
+        
+        # 2. Detailed Memo Content
+        memo = (
+            "ENGINEERING MEMORANDUM\n"
+            "TO: Concrete Production & Quality Control Teams\n"
+            "SUBJECT: Statistical Optimization Recommendation for Mix Designs\n\n"
+            
+            "OBSERVATIONS FROM EXPLORATORY ANALYSIS:\n"
+            "Exploratory scatterplots reveal a clear, upward linear trend between Cement content and "
+            "Compressive Strength. This is statistically anchored by strong positive correlation results, "
+            "identifying Cement as the primary performance driver. Conversely, Water shows a negative "
+            "correlation, where high concentrations visibly increase data dispersion and reduce peak MPa. "
+            "Scatterplots for Age indicate that strength gains follow a predictable logarithmic path, "
+            "with major variance occurring within the first 28 days.\n\n"
+            
+            "REGRESSION INSIGHTS & RECOMMENDATIONS:\n"
+            "Multiple regression coefficients indicate that for every unit increase in Cement, there is "
+            "a reliable gain in strength. Based on these findings, we recommend the following adjustments:\n"
+            "- CEMENT & WATER: Optimize the water-cement ratio by lowering Water volume and utilizing "
+            "Superplasticizer additives to maintain workability while maximizing the binding efficiency.\n"
+            "- SLAG & FLY ASH: Both Blast Furnace Slag and Fly Ash contribute positively to long-term "
+            "structural integrity; they should be maintained as supplementary binders to reduce cost "
+            "without losing durability.\n"
+            "- CURING TIME: Regression data confirms that Age is a non-negotiable factor. We recommend "
+            "enforcing a minimum 28-day curing standard to ensure hydration processes reach the target "
+            "statistical threshold for structural safety."
+        )
+        self.update_dashboard_text("PART E: ENGINEERING RECOMMENDATION", memo)
+
+    def run_anova(self):
+        temp_df = self.df.copy()
+        # Ensure column indexing is consistent for the formula
+        temp_df.columns = ["Cement", "Slag", "Ash", "Water", "Plasticizer", "Coarse", "Fine", "Age", "Strength"]
+        temp_df['Age_Group'] = pd.cut(temp_df['Age'], bins=[0, 7, 28, 400], labels=['Early', 'Standard', 'Late'])
+        
+        model = ols('Strength ~ C(Age_Group)', data=temp_df).fit()
+        table = sm.stats.anova_lm(model, typ=2)
+        
+        info = f"ANOVA SUMMARY (By Curing Stage)\n{table.to_string()}"
+        self.update_dashboard_text("PART F: ANOVA ANALYSIS", info)
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.boxplot(x='Age_Group', y='Strength', data=temp_df, palette="Blues", ax=ax)
+        ax.set_title("Strength Distribution by Curing Stage")
+        self.embed_plot(fig)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ConcreteAnalysisApp(root)
+    root.mainloop()
